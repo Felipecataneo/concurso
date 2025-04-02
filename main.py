@@ -22,7 +22,7 @@ st.set_page_config(
 # --- Constantes ---
 # Use o modelo multimodal estável ou o experimental se tiver acesso
 # MODEL_NAME = "gemini-1.5-pro-exp-03-25"
-MODEL_NAME = "gemini-1.5-pro-latest" # Modelo multimodal recomendado
+MODEL_NAME = "gemini-2.5-pro-exp-03-25" # Modelo multimodal recomendado
 # Ajuste o tamanho do batch de páginas conforme necessário (considerar limites de token/tempo)
 PAGES_PER_BATCH = 2 # Analisar 2 páginas por vez
 
