@@ -1,0 +1,5 @@
+streamlit
+google-generativeai
+pdfplumber
+pdf2image 
+Pillow
