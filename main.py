@@ -22,7 +22,7 @@ st.set_page_config(
 )
 
 # --- Constantes ---
-MODEL_NAME = "gemini-2.5-pro-exp-03-25"
+MODEL_NAME = "gemini-1.5-pro-latest"
 PAGES_PER_BATCH = 2
 
 # --- Funções Auxiliares ---
@@ -30,91 +30,58 @@ PAGES_PER_BATCH = 2
 @st.cache_data(show_spinner="Convertendo PDF para imagens...")
 def convert_pdf_to_images(_pdf_bytes):
     """Converts PDF bytes into a list of PIL Image objects."""
-    # ... (código da função convert_pdf_to_images sem alterações) ...
+    # ... (código da função convert_pdf_to_images) ...
     images = []
     error_message = None
     try:
         thread_count = os.cpu_count() if os.cpu_count() else 2
         images = convert_from_bytes(_pdf_bytes, dpi=200, fmt='png', thread_count=thread_count)
-    except PDFInfoNotInstalledError:
-        error_message = "Erro de Configuração: Poppler não encontrado..." # Mensagem completa omitida por brevidade
-    except PDFPageCountError:
-        error_message = "Erro: Não foi possível determinar o número de páginas no PDF..."
-    except PDFSyntaxError:
-        error_message = "Erro: Sintaxe inválida no PDF..."
-    except Exception as e:
-        error_message = f"Erro inesperado durante a conversão: {str(e)}"
-    if not images and not error_message:
-         error_message = "Nenhuma imagem gerada..."
+    except PDFInfoNotInstalledError: error_message = "Erro Config: Poppler não encontrado..."
+    except PDFPageCountError: error_message = "Erro: Páginas PDF..."
+    except PDFSyntaxError: error_message = "Erro: Sintaxe PDF..."
+    except Exception as e: error_message = f"Erro conversão: {str(e)}"
+    if not images and not error_message: error_message = "Nenhuma imagem gerada."
     return images, error_message
-
 
 # --- Gemini Multimodal Analysis Function ---
 def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
     """Analyzes a batch of PDF page images using Gemini."""
-    # ... (código da função analyze_pages_with_gemini_multimodal sem alterações) ...
-    analysis_output = f"## Análise das Páginas (Batch de {len(page_images_batch)})\n\n"
+    # ... (código da função analyze_pages_with_gemini_multimodal) ...
+    analysis_output = f"## Análise (Batch: {len(page_images_batch)} págs)\n\n"
     full_analysis_text = ""
-    if not page_images_batch: return "Nenhuma imagem de página fornecida."
+    if not page_images_batch: return "Nenhuma imagem fornecida."
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name=MODEL_NAME)
-        prompt_parts = [
-            "**Instrução Principal:** ... (prompt completo omitido por brevidade) ...",
-            "\n\n**IMAGENS DAS PÁGINAS PARA ANÁLISE:**\n"
-        ]
+        prompt_parts = ["**Instrução Principal:** ...", "\n\n**IMAGENS:**\n"] # Prompt omitido
         for img in page_images_batch:
-            buffer = io.BytesIO()
-            try:
-                 img.save(buffer, format="PNG")
-                 mime_type = "image/png"
-            except Exception as e_save:
-                 st.warning(f"Falha ao salvar imagem como PNG ({e_save}), pulando.")
-                 continue
-            image_bytes = buffer.getvalue()
-            prompt_parts.append({"mime_type": mime_type, "data": image_bytes})
+            buffer = io.BytesIO(); img.save(buffer, format="PNG"); image_bytes = buffer.getvalue()
+            prompt_parts.append({"mime_type": "image/png", "data": image_bytes})
 
-        with st.spinner(f"Analisando {len(page_images_batch)} página(s) com IA ({MODEL_NAME})..."):
+        with st.spinner(f"Analisando {len(page_images_batch)} pág(s) com IA..."):
             try:
                 response = model.generate_content(prompt_parts, stream=False)
-                # Process Response ... (código de processamento da resposta omitido)
-                if hasattr(response, 'text'):
-                     full_analysis_text = response.text
-                elif hasattr(response, 'parts') and response.parts:
-                     full_analysis_text = "".join(part.text for part in response.parts if hasattr(part, "text"))
+                # Process Response ... (código omitido)
+                if hasattr(response, 'text'): full_analysis_text = response.text
+                elif hasattr(response, 'parts'): full_analysis_text = "".join(p.text for p in response.parts if hasattr(p,"text"))
                 elif response.prompt_feedback and response.prompt_feedback.block_reason:
-                    block_reason = response.prompt_feedback.block_reason
-                    # ... (tratamento de bloqueio) ...
-                    full_analysis_text = f"**Análise Bloqueada pela API:** ..."
-                    st.error(f"Análise bloqueada: ...")
-                else:
-                     full_analysis_text = "Resposta da API vazia ou inesperada."
-                     st.warning(f"Resposta inesperada: {response}")
-
-            except StopCandidateException as stop_e:
-                 full_analysis_text = f"\n\n**Erro de Geração:** ... ({stop_e})."
-                 st.error(f"Erro na Geração Gemini (StopCandidateException): {stop_e}")
-            except Exception as e:
-                 st.error(f"Erro durante a chamada da API Gemini: {str(e)}")
-                 full_analysis_text += f"\n\n**Erro Crítico na Análise:** ... {str(e)}"
+                    full_analysis_text = f"**Análise Bloqueada:** {response.prompt_feedback.block_reason_message}"
+                    st.error(f"Análise bloqueada: {response.prompt_feedback.block_reason_message}")
+                else: full_analysis_text = "Resposta API vazia/inesperada."
+            except StopCandidateException as e: full_analysis_text = f"**Erro Geração:** {e}"; st.error(f"{e}")
+            except Exception as e: full_analysis_text = f"**Erro API:** {e}"; st.error(f"{e}")
         analysis_output += full_analysis_text
-    except Exception as e:
-        st.error(f"Erro geral na análise: {str(e)}")
-        analysis_output += f"\n\n**Erro Crítico:** {str(e)}"
+    except Exception as e: analysis_output += f"**Erro Crítico:** {e}"; st.error(f"{e}")
     return analysis_output
 
-
 # --- Callback Function ---
-def sync_batch_selection():
-    """Callback para selectbox, ajuda a sincronizar o estado."""
-    # A ação principal é feita pelo 'key', este callback ajuda no fluxo.
-    print(f"Callback sync_batch_selection: st.session_state.selected_batch is now '{st.session_state.get('selected_batch')}'")
-    pass
-
+# REMOVIDO - Não mais necessário com a abordagem de formulário
+# def sync_batch_selection():
+#    pass
 
 # --- Streamlit Interface ---
 st.title("📸 Analisador Multimodal de Provas com IA (Gemini)")
-st.markdown(f"Envie um PDF...") # Mensagem completa omitida
+st.markdown(f"Envie um PDF...")
 
 # --- Sidebar ---
 with st.sidebar:
@@ -122,10 +89,44 @@ with st.sidebar:
     api_key = st.text_input("Sua Chave API do Google Gemini", type="password")
 
     st.subheader("Opções de Análise")
-    # Batch selection populated after upload
+
+    # --- FORMULÁRIO PARA SELEÇÃO DE BATCH ---
+    if st.session_state.get('batch_options'): # Verifica se há opções antes de criar o form
+        with st.form("batch_selection_form"):
+            st.markdown("**1. Escolha o Batch:**")
+
+            current_selection_sidebar = st.session_state.get('selected_batch')
+            try:
+                # Apenas para definir a exibição inicial do selectbox
+                current_index_sidebar = st.session_state.batch_options.index(current_selection_sidebar)
+            except (ValueError, IndexError):
+                current_index_sidebar = 0 # Default para o primeiro item
+
+            # Selectbox DENTRO do formulário
+            st.selectbox(
+                "Intervalo de páginas:",
+                options=st.session_state.batch_options,
+                index=current_index_sidebar,
+                key='selected_batch', # Key ainda útil para manter seleção entre runs não submetidos
+                help="Selecione as páginas e clique em 'Confirmar'."
+            )
+
+            # Botão de submissão do formulário
+            submitted = st.form_submit_button("🎯 Confirmar Batch Selecionado")
+
+            if submitted:
+                # Quando submetido, o valor de 'selected_batch' está atualizado
+                st.success(f"Batch '{st.session_state.get('selected_batch')}' pronto para análise!")
+                # A submissão do form já causa um rerun, não precisa de st.rerun() explícito
+                print(f"Form Submitted: selected_batch = '{st.session_state.get('selected_batch')}'") # Debug no terminal
+    else:
+        st.info("Faça upload de um PDF para habilitar a seleção.")
+        # Garantir que não há seleção se não há opções
+        if 'selected_batch' in st.session_state:
+            st.session_state.selected_batch = None
 
     st.markdown("---")
-    st.markdown("### Como Usar: ...") # Instruções omitidas
+    st.markdown("### Como Usar:\n1. Cole a API Key.\n2. Upload PDF.\n3. **Selecione o batch e clique em 'Confirmar Batch'**.\n4. Clique em 'Analisar Batch Confirmado'.\n5. Repita 3 e 4.")
     st.markdown("---")
     st.info("...")
     st.warning("**Dependência Externa:** Requer `poppler`...")
@@ -152,175 +153,133 @@ if uploaded_file is not None:
         st.session_state.original_filename = uploaded_file.name
         # Reset state
         for key in default_state:
-            if key not in ['uploaded_file_id', 'original_filename']:
-                st.session_state[key] = default_state[key]
+            if key not in ['uploaded_file_id', 'original_filename']: st.session_state[key] = default_state[key]
 
-        # --- Convert PDF ---
+        # Convert PDF
         pdf_bytes = uploaded_file.getvalue()
         images, error = convert_pdf_to_images(pdf_bytes)
 
-        if error:
-            st.error(f"Falha na Conversão: {error}")
-            st.session_state.error_message = f"Falha na Conversão: {error}"
+        if error or not images:
+            err_msg = error if error else "Nenhuma imagem gerada."
+            st.error(f"Falha: {err_msg}")
+            st.session_state.error_message = f"Falha: {err_msg}"
             st.session_state.pdf_page_images = []
-        elif not images:
-            st.warning("Nenhuma imagem gerada.")
-            st.session_state.error_message = "Nenhuma imagem gerada."
-            st.session_state.pdf_page_images = []
+            st.session_state.batch_options = [] # Limpa opções também
+            st.session_state.selected_batch = None
         else:
-            # --- Success: Store images, generate options, set initial selection ---
             st.session_state.pdf_page_images = images
             st.session_state.total_pages = len(images)
-            st.success(f"Conversão OK! {st.session_state.total_pages} páginas prontas.")
-
+            st.success(f"Conversão OK! {st.session_state.total_pages} págs.")
+            # Generate options
             num_batches = math.ceil(st.session_state.total_pages / PAGES_PER_BATCH)
             batch_opts = []
             if st.session_state.total_pages > 1: batch_opts.append("Analisar Todas")
             for i in range(num_batches):
-                start = i * PAGES_PER_BATCH + 1
-                end = min((i + 1) * PAGES_PER_BATCH, st.session_state.total_pages)
-                batch_opts.append(f"Página {start}" if start == end else f"Páginas {start}-{end}")
-
+                s, e = i*PAGES_PER_BATCH+1, min((i+1)*PAGES_PER_BATCH, st.session_state.total_pages)
+                batch_opts.append(f"Página {s}" if s == e else f"Páginas {s}-{e}")
             st.session_state.batch_options = batch_opts
-            # Set initial default (first specific batch or first option)
-            if len(batch_opts) > 1 and "Analisar Todas" in batch_opts:
-                 st.session_state.selected_batch = batch_opts[1]
-            elif batch_opts:
-                 st.session_state.selected_batch = batch_opts[0]
+            # Set initial selection (if options exist)
+            if batch_opts:
+                st.session_state.selected_batch = batch_opts[1] if len(batch_opts) > 1 and "Analisar Todas" in batch_opts else batch_opts[0]
             else:
-                 st.session_state.selected_batch = None
-            st.rerun() # Update UI after conversion and option generation
+                st.session_state.selected_batch = None
 
-# --- Display file details and batch selection UI (if images are ready) ---
+        st.rerun() # Rerun after processing upload
+
+
+# --- Display file details and UI elements ---
 if st.session_state.pdf_page_images:
     file_name_display = f"'{st.session_state.original_filename}'" if st.session_state.original_filename else "Carregado"
     st.success(f"Arquivo {file_name_display} pronto ({st.session_state.total_pages} págs).")
 
     with st.expander("Visualizar Miniaturas"):
-        # ... (código do expander sem alterações) ...
         max_preview = 10; cols = st.columns(5)
         for i, img in enumerate(st.session_state.pdf_page_images[:max_preview]):
             with cols[i % 5]: st.image(img, caption=f"Pág {i+1}", width=120)
         if st.session_state.total_pages > max_preview: st.markdown(f"*(Primeiras {max_preview})*")
 
-
-    # --- Batch Selection UI (Sidebar) ---
-    with st.sidebar:
-         st.subheader("🎯 Selecionar Batch de Páginas")
-         if st.session_state.batch_options:
-              # Calcula o índice para exibição inicial (não crucial para a lógica de estado)
-              current_selection_sidebar = st.session_state.get('selected_batch')
-              try:
-                   current_index_sidebar = st.session_state.batch_options.index(current_selection_sidebar)
-              except (ValueError, IndexError):
-                   current_index_sidebar = 0 # Default para primeiro item
-
-              st.selectbox(
-                  "Escolha o intervalo de páginas:",
-                  options=st.session_state.batch_options,
-                  index=current_index_sidebar,
-                  key='selected_batch', # Vincula ao estado
-                  on_change=sync_batch_selection, # Callback para ajudar na sincronia
-                  help="Selecione as páginas para enviar à IA."
-              )
-         else:
-              st.info("Faça upload de um PDF.")
-
-    # --- Analysis Trigger ---
+    # --- Analysis Trigger Button (Main Area) ---
     st.write("## ⚙️ 2. Iniciar Análise Multimodal do Batch")
 
-    # ***** MODIFICAÇÃO CHAVE: Ler o estado AQUI *****
-    current_selected_batch_for_button = st.session_state.get('selected_batch')
-    button_label_batch = current_selected_batch_for_button if current_selected_batch_for_button else "None"
+    # Lê o valor ATUAL do batch selecionado (que foi confirmado pelo form)
+    batch_confirmado = st.session_state.get('selected_batch')
+    button_label = batch_confirmado if batch_confirmado else "None"
 
-    # ***** DEBUGGING: Verifique o valor lido *****
-    st.warning(f"DEBUG (Before Button): current_selected_batch_for_button = '{current_selected_batch_for_button}'")
-    st.warning(f"DEBUG (Before Button): st.session_state.analysis_running = {st.session_state.analysis_running}")
-    # ***** FIM DEBUGGING *****
+    # DEBUG: Mostra o valor que será usado pelo botão
+    st.info(f"Batch confirmado pronto para análise: **{button_label}**")
+    # st.warning(f"DEBUG (Main - Before Button): batch_confirmado = '{batch_confirmado}'")
 
-    # Define se o botão deve estar desabilitado
     is_disabled = (
         st.session_state.analysis_running or
-        not current_selected_batch_for_button or  # Verifica o valor lido AGORA
+        not batch_confirmado or # Verifica se um batch foi confirmado
         not st.session_state.pdf_page_images or
         not api_key
     )
 
     analyze_button = st.button(
-         f"Analisar Batch Selecionado ({button_label_batch})", # Usa o valor lido AGORA
+         f"Analisar Batch Confirmado ({button_label})", # Label reflete o batch confirmado
          type="primary",
          use_container_width=True,
-         disabled=is_disabled # Usa a variável de desabilitado calculada AGORA
+         disabled=is_disabled
     )
 
     if analyze_button:
-        # Verificações pré-análise (usando o valor já verificado)
         if not api_key: st.error("⚠️ Insira a Chave API."); st.stop()
-        if not current_selected_batch_for_button: st.error("⚠️ Selecione um batch."); st.stop() # Redundante devido ao disabled, mas seguro
-        if not st.session_state.pdf_page_images: st.error("⚠️ Sem imagens PDF."); st.stop()
+        if not batch_confirmado: st.error("⚠️ Confirme um batch na sidebar."); st.stop() # Redundante, mas seguro
 
-        # --- Iniciar processo ---
         st.session_state.analysis_running = True
         st.session_state.analysis_result = None
         st.session_state.error_message = None
-        # st.rerun() # REMOVIDO daqui - o fluxo continua para o bloco 'if analysis_running'
+        # Rerun IMPLÍCITO aqui, pois o estado mudou e o script re-executará
 
 # --- Handle Analysis Execution ---
 if st.session_state.analysis_running:
-     # Usa o valor do estado que foi usado para iniciar
+     # Usa o valor que foi confirmado e levou ao clique do botão
      batch_to_analyze = st.session_state.selected_batch
      with st.spinner(f"Preparando e analisando o batch '{batch_to_analyze}'..."):
         # --- Determina as páginas ---
         pages_to_process = []
-        # ... (lógica para parsear 'batch_to_analyze' e obter 'pages_to_process' - sem alterações) ...
         all_images = st.session_state.pdf_page_images
         total_pg = st.session_state.total_pages
-        if batch_to_analyze == "Analisar Todas":
-            pages_to_process = all_images; st.info(f"Processando todas {total_pg} págs.")
+        # ... (lógica para parsear 'batch_to_analyze' e obter 'pages_to_process') ...
+        if batch_to_analyze == "Analisar Todas": pages_to_process = all_images; st.info(f"Proc. todas {total_pg} págs.")
         else:
-            nums_str = re.findall(r'\d+', batch_to_analyze); # ... (resto do parsing) ...
-            try: # Adicionado try/except robusto
-                if len(nums_str) == 1: start_label, end_label = int(nums_str[0]), int(nums_str[0])
-                elif len(nums_str) == 2: start_label, end_label = int(nums_str[0]), int(nums_str[1])
-                else: raise ValueError("Formato batch inválido")
-                start_idx, end_idx = start_label - 1, end_label
-                if 0 <= start_idx < total_pg and start_idx < end_idx <= total_pg:
-                    pages_to_process = all_images[start_idx:end_idx]
-                    st.info(f"Analisando págs {start_label}-{end_label}...")
-                else: st.warning(f"Intervalo inválido {start_label}-{end_label}.")
-            except Exception as e: st.error(f"Erro no parsing do batch '{batch_to_analyze}': {e}")
-
+            nums_str = re.findall(r'\d+', batch_to_analyze)
+            try:
+                if len(nums_str)==1: s,e = int(nums_str[0]),int(nums_str[0])
+                elif len(nums_str)==2: s,e = int(nums_str[0]),int(nums_str[1])
+                else: raise ValueError("Inválido")
+                s_idx, e_idx = s-1, e
+                if 0<=s_idx<total_pg and s_idx<e_idx<=total_pg: pages_to_process = all_images[s_idx:e_idx]; st.info(f"Analisando {s}-{e}...")
+                else: st.warning(f"Intervalo {s}-{e} inválido.")
+            except Exception as ex: st.error(f"Erro parsing batch '{batch_to_analyze}': {ex}")
 
         # --- Executa a análise ---
         if pages_to_process:
             analysis_result_text = analyze_pages_with_gemini_multimodal(api_key, pages_to_process)
             st.session_state.analysis_result = analysis_result_text
-            if "Erro" in (analysis_result_text or "") or "Bloqueada" in (analysis_result_text or ""):
-                 st.session_state.error_message = "Erro durante a análise pela IA."
+            if "Erro" in (analysis_result_text or "") or "Bloqueada" in (analysis_result_text or ""): st.session_state.error_message = "Erro na análise IA."
         else:
-            if not st.session_state.error_message:
-                  st.session_state.error_message = "Nenhuma página selecionada/válida para análise neste batch."
+            if not st.session_state.error_message: st.session_state.error_message = "Nenhuma pág. selecionada/válida."
 
         # --- Análise concluída ---
         st.session_state.analysis_running = False
-        st.rerun() # Atualiza a UI para mostrar resultado/erro e reabilitar botão
+        st.rerun() # Atualiza a UI pós-análise
 
 # --- Display Results or Errors ---
 if st.session_state.error_message and not st.session_state.analysis_running:
     st.error(f"⚠️ {st.session_state.error_message}")
 
 if st.session_state.analysis_result and not st.session_state.analysis_running:
-    # ... (código para exibir resultado e botão de download - sem alterações) ...
+    # ... (código para exibir resultado e botão de download) ...
     st.write(f"## 📊 3. Resultado (Batch: {st.session_state.get('selected_batch', 'N/A')})")
     st.markdown(st.session_state.analysis_result, unsafe_allow_html=False)
     try: # Download button
-        # ... (lógica do nome do arquivo) ...
         original_fn = re.sub(r'[^\w\d-]+','_', os.path.splitext(st.session_state.original_filename or 'prova')[0])
         batch_sfx = re.sub(r'[^\w\d-]+','_', st.session_state.selected_batch or 'completo').strip('_')
         dl_fn = f"analise_multimodal_{original_fn}_batch_{batch_sfx}.md"
         st.download_button(f"📥 Baixar Análise ({batch_sfx})", (st.session_state.analysis_result or "").encode('utf-8'), dl_fn, "text/markdown")
     except Exception as dl_e: st.warning(f"Erro download: {dl_e}")
-
 
 # --- Footer ---
 st.markdown("---")
