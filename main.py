@@ -309,52 +309,55 @@ if st.session_state.pdf_page_images:
         if st.session_state.total_pages > max_preview:
             st.markdown(f"*(Pré-visualização limitada às primeiras {max_preview} de {st.session_state.total_pages} páginas)*")
 
-    # --- Batch Selection UI (Sidebar) ---
-    with st.sidebar:
-         st.subheader("🎯 Selecionar Batch de Páginas")
-         if st.session_state.batch_options:
-              # Definindo índice de seleção atual
-              current_selection = st.session_state.get('selected_batch')
-              try:
-                   # Ensure current selection is valid, otherwise default
-                   if current_selection not in st.session_state.batch_options:
-                        current_selection = st.session_state.batch_options[0] # Default to first option
-                        st.session_state.selected_batch = current_selection # Update state if defaulted
-                   current_index = st.session_state.batch_options.index(current_selection)
-              except (ValueError, IndexError):
-                   # Fallback if options are somehow empty or index fails
-                   current_index = 0
-                   if st.session_state.batch_options:
-                        st.session_state.selected_batch = st.session_state.batch_options[0]
-                   else:
-                        st.session_state.selected_batch = None # No valid options
-
-              # Modificado: Não vincula diretamente à sessão para evitar perda de estado
-              batch_selection = st.selectbox(
-                  "Escolha o intervalo de páginas:",
-                  options=st.session_state.batch_options,
-                  index=current_index,
-                  key=f"batch_selector_{time.time()}", # Unique key to avoid state binding issues
-                  help="Selecione as páginas a serem enviadas para análise pela IA."
-              )
-              
-              # Só atualiza a seleção se o valor for diferente (evita rerun desnecessário)
-              if batch_selection != st.session_state.selected_batch:
-                   st.session_state.selected_batch = batch_selection
-                   
-                   # Verifica se este batch já tem resultado salvo
-                   if batch_selection in st.session_state.results_by_batch:
-                        st.session_state.analysis_result = st.session_state.results_by_batch[batch_selection]
-                        st.info(f"Carregado resultado existente para o batch '{batch_selection}'")
-                   else:
-                        # Não limpa o resultado anterior se trocar para batch sem análise
-                        pass
-                   
-                   # Atualização manual para mostrar mudança de seleção
-                   st.rerun()
-         else:
-              # This case shouldn't be reached if pdf_page_images is populated
-              st.info("Aguardando opções de batch...")
+# --- Batch Selection UI (Sidebar) ---
+with st.sidebar:
+    st.subheader("🎯 Selecionar Batch de Páginas")
+    if st.session_state.batch_options:
+        # Crie uma chave exclusiva para o selectbox que NÃO seja vinculada ao session_state
+        # Isso impede que o Streamlit redefina a seleção automaticamente
+        
+        # Inicialize selected_batch se ainda não estiver definido
+        if st.session_state.selected_batch is None and st.session_state.batch_options:
+            if len(st.session_state.batch_options) > 1 and "Analisar Todas" in st.session_state.batch_options:
+                st.session_state.selected_batch = st.session_state.batch_options[1]  # Primeiro batch específico
+            else:
+                st.session_state.selected_batch = st.session_state.batch_options[0]  # Primeira opção
+        
+        # Encontre o índice atual na lista de opções
+        try:
+            current_index = st.session_state.batch_options.index(st.session_state.selected_batch)
+        except (ValueError, TypeError):
+            current_index = 0
+            if st.session_state.batch_options:
+                st.session_state.selected_batch = st.session_state.batch_options[current_index]
+        
+        # Criamos uma função callback para atualizar o valor selecionado
+        def update_batch_selection():
+            # Obtém o valor do widget pelo valor da chave
+            selected_value = st.session_state.batch_selector_widget
+            # Atualiza session_state apenas se o valor for diferente
+            if selected_value != st.session_state.selected_batch:
+                st.session_state.selected_batch = selected_value
+                
+                # Verificar se já existe resultado para esse batch
+                if selected_value in st.session_state.results_by_batch:
+                    st.session_state.analysis_result = st.session_state.results_by_batch[selected_value]
+                    st.success(f"Carregado resultado existente para o batch '{selected_value}'")
+        
+        # Usa o selectbox com uma chave única e uma função callback
+        batch_selection = st.selectbox(
+            "Escolha o intervalo de páginas:",
+            options=st.session_state.batch_options,
+            index=current_index,
+            key="batch_selector_widget",
+            on_change=update_batch_selection,
+            help="Selecione as páginas a serem enviadas para análise pela IA."
+        )
+        
+        # Exibir estado atual para debug (opcional, pode remover em produção)
+        st.sidebar.caption(f"Batch selecionado: {st.session_state.selected_batch}")
+    else:
+        st.info("Aguardando opções de batch...")
 
     # --- Estado das Análises ---
     if st.session_state.results_by_batch:
