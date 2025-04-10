@@ -349,100 +349,110 @@ if st.session_state.pdf_page_images:
 
 
     # --- Analysis Trigger ---
+
     st.write("## ⚙️ 2. Iniciar Análise Multimodal do Batch")
-    # Ensure selected_batch from state is used for the button label
     selected_batch_display = st.session_state.get('selected_batch', 'Nenhum')
+
+    # DEBUG INFO (opcional, mas útil)
+    # st.write("--- DEBUG INFO (Before Button) ---")
+    # st.write(f"analysis_running: {st.session_state.analysis_running}")
+    # st.write(f"selected_batch: '{st.session_state.selected_batch}'")
+    # st.write(f"pdf_page_images exists: {bool(st.session_state.pdf_page_images)}")
+    # st.write(f"api_key exists: {bool(api_key)}")
+    # disabled_check = st.session_state.analysis_running or not st.session_state.selected_batch or not st.session_state.pdf_page_images or not api_key
+    # st.write(f"Button disabled calculated: {disabled_check}")
+    # st.write("--- END DEBUG INFO ---")
+
     analyze_button = st.button(
          f"Analisar Batch Selecionado ({selected_batch_display})",
          type="primary",
          use_container_width=True,
-         # Disable if analysis running, no batch selected, no images, or no API key
          disabled=st.session_state.analysis_running or not st.session_state.selected_batch or not st.session_state.pdf_page_images or not api_key
     )
 
     if analyze_button:
-        # Double-check preconditions right before starting
+        # Verificações pré-análise
         if not api_key:
             st.error("⚠️ Por favor, insira sua Chave API do Google Gemini na barra lateral.")
-        elif not st.session_state.selected_batch:
+            st.stop() # Impede a continuação se não houver chave
+        if not st.session_state.selected_batch:
              st.error("⚠️ Por favor, selecione um batch de páginas na barra lateral.")
-        elif not st.session_state.pdf_page_images:
-             # Should be caught earlier, but good as a safeguard
+             st.stop()
+        if not st.session_state.pdf_page_images:
              st.error("⚠️ Nenhuma imagem de página encontrada. Faça upload e converta um PDF primeiro.")
-        else:
-            # --- Start Analysis Process ---
-            st.session_state.analysis_running = True
-            # **Otimização:** Limpar resultado e erro ANTES da nova análise
-            st.session_state.analysis_result = None
-            st.session_state.error_message = None
-            st.rerun() # Rerun imediato para mostrar o estado "rodando" e limpar resultados antigos
+             st.stop()
 
-# --- Handle Analysis Execution (continuação do if analyze_button, mas após o rerun) ---
-# This block runs *after* the rerun triggered by setting analysis_running to True
+        # --- Iniciar o processo de análise ---
+        st.session_state.analysis_running = True
+        st.session_state.analysis_result = None # Limpa resultado anterior
+        st.session_state.error_message = None   # Limpa erro anterior
+        # REMOVIDO: st.rerun() daqui. Deixe o script continuar para o bloco 'if analysis_running'.
+
+# --- Handle Analysis Execution ---
+# Este bloco agora executa na MESMA passagem do script se analyze_button foi True
 if st.session_state.analysis_running:
-     # Show spinner while preparing and running analysis
+     # Mostra o spinner durante a preparação e execução
      with st.spinner(f"Preparando e analisando o batch '{st.session_state.selected_batch}'... Isso pode levar um tempo."):
-        # --- Determine Page Images to Analyze Based on Batch ---
+        # --- Determina as páginas (lógica existente) ---
         pages_to_process = []
         selected = st.session_state.selected_batch
         all_images = st.session_state.pdf_page_images
         total_pg = st.session_state.total_pages
 
         if selected == "Analisar Todas":
-            pages_to_process = all_images
-            st.info(f"Processando todas as {total_pg} páginas...") # Log info is helpful
+            # ... (lógica para 'Analisar Todas')
+            pages_to_process = all_images # Simplificado
+            st.info(f"Processando todas as {total_pg} páginas...")
         else:
-            # Use regex to find numbers in the selection string
+            # ... (lógica para extrair start/end page e obter pages_to_process)
             nums_str = re.findall(r'\d+', selected)
             try:
-                if len(nums_str) == 1: # Single page case like "Página 5"
+                if len(nums_str) == 1:
                     start_page_label = int(nums_str[0])
                     end_page_label = start_page_label
-                elif len(nums_str) == 2: # Range case like "Páginas 1-2"
+                elif len(nums_str) == 2:
                     start_page_label = int(nums_str[0])
                     end_page_label = int(nums_str[1])
                 else:
-                    # Should not happen with generated options, but handle defensively
                     raise ValueError(f"Formato de batch inesperado: {selected}")
 
-                # Convert 1-based page labels to 0-based list indices
                 start_index = start_page_label - 1
-                # Slice goes up to, but not including, end_index, so use end_page_label directly
                 end_index = end_page_label
 
-                # Validate indices against available pages
                 if 0 <= start_index < total_pg and start_index < end_index <= total_pg:
                     pages_to_process = all_images[start_index:end_index]
                     st.info(f"Analisando páginas de {start_page_label} a {end_page_label}...")
                 else:
-                    st.warning(f"Intervalo de páginas inválido ({start_page_label}-{end_page_label}) para o total de {total_pg} páginas no batch '{selected}'. Nenhuma página selecionada.")
-                    pages_to_process = [] # Ensure it's empty
-
+                    st.warning(f"Intervalo inválido ({start_page_label}-{end_page_label}) para {total_pg} páginas.")
+                    pages_to_process = []
             except ValueError as parse_e:
-                st.error(f"Erro ao interpretar a seleção de batch '{selected}': {parse_e}. Tente selecionar novamente.")
-                pages_to_process = [] # Ensure it's empty on parse error
+                st.error(f"Erro ao interpretar batch '{selected}': {parse_e}.")
+                pages_to_process = []
 
-        # --- Proceed with analysis ONLY if pages were successfully selected ---
+
+        # --- Executa a análise se houver páginas ---
+        analysis_result_text = None # Variável temporária
         if pages_to_process:
-            # Call the analysis function (contains its own spinner for the API call)
-            analysis_markdown = analyze_pages_with_gemini_multimodal(
+            analysis_result_text = analyze_pages_with_gemini_multimodal(
                     api_key,
-                    pages_to_process, # Pass the list of PIL Image objects for the current batch
+                    pages_to_process,
                 )
-            st.session_state.analysis_result = analysis_markdown
-            # Store potential errors from the analysis function itself if it returns error messages
-            if "Erro Crítico" in analysis_markdown or "Análise Bloqueada" in analysis_markdown or "Erro de Geração" in analysis_markdown:
-                 st.session_state.error_message = "A análise retornou um erro. Veja detalhes abaixo." # Generic message, details are in analysis_result
-
+            st.session_state.analysis_result = analysis_result_text # Armazena no estado
+            if "Erro" in analysis_result_text or "Bloqueada" in analysis_result_text:
+                 st.session_state.error_message = "Erro durante a análise pela IA."
         else:
-            # If pages_to_process is empty due to errors above, set an error message
-            if not st.session_state.error_message: # Avoid overwriting specific parsing errors
-                  st.session_state.error_message = "Nenhuma página foi selecionada para análise neste batch devido a um erro ou intervalo inválido."
+            if not st.session_state.error_message: # Evita sobrescrever erro de parsing
+                  st.session_state.error_message = "Nenhuma página selecionada para análise neste batch."
 
-        # --- Analysis finished (or failed) ---
+        # --- Análise concluída (ou falhou) ---
         st.session_state.analysis_running = False
-        # Rerun again to display results/errors and re-enable the button
+        # AGORA chamamos st.rerun() para atualizar a UI com o resultado/erro
+        # e reabilitar o botão.
         st.rerun()
+
+# --- Display Results or Errors ---
+# (O restante do código para exibir resultados/erros permanece o mesmo)
+# ...
 
 
 # --- Display Results or Errors ---
