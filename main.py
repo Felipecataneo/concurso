@@ -22,7 +22,7 @@ st.set_page_config(
 )
 
 # --- Constantes ---
-MODEL_NAME = "gemini-1.5-pro-latest" # Ou "gemini-pro-vision" se preferir
+MODEL_NAME = "gemini-2.5-pro-exp-03-25" # Ou "gemini-pro-vision" se preferir
 PAGES_PER_BATCH = 2 # Analisar 2 páginas por vez
 
 # --- Funções Auxiliares ---
@@ -33,11 +33,13 @@ def convert_pdf_to_images(_pdf_bytes): # Renomeado argumento para evitar shadowi
     images = []
     error_message = None
     try:
-        images = convert_from_bytes(_pdf_bytes, dpi=200, fmt='png', thread_count=os.cpu_count()) # Usar mais threads se disponível
+        # Tenta usar múltiplos threads para acelerar, se possível
+        thread_count = os.cpu_count() if os.cpu_count() else 2
+        images = convert_from_bytes(_pdf_bytes, dpi=200, fmt='png', thread_count=thread_count)
     except PDFInfoNotInstalledError:
         error_message = """
         Erro de Configuração: Poppler não encontrado.
-        'pdf2image' requer a instalação do utilitário 'poppler'. Verifique as instruções de instalação para seu sistema.
+        'pdf2image' requer a instalação do utilitário 'poppler'. Verifique as instruções de instalação para seu sistema (Linux: sudo apt-get install poppler-utils, macOS: brew install poppler, Windows: download e add ao PATH).
         """
     except PDFPageCountError:
         error_message = "Erro: Não foi possível determinar o número de páginas no PDF. O arquivo pode estar corrompido."
@@ -52,8 +54,6 @@ def convert_pdf_to_images(_pdf_bytes): # Renomeado argumento para evitar shadowi
     return images, error_message
 
 # --- Gemini Multimodal Analysis Function ---
-# (Sua função analyze_pages_with_gemini_multimodal permanece a mesma - já estava boa)
-# --- [COPIAR SUA FUNÇÃO analyze_pages_with_gemini_multimodal AQUI] ---
 def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
     """
     Analyzes a batch of PDF page images using Gemini's multimodal capabilities.
@@ -67,7 +67,6 @@ def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
 
     try:
         genai.configure(api_key=api_key)
-        # Use o modelo mais recente ou o pro-vision se preferir
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
             # safety_settings={ # Exemplo: Ajustar segurança se necessário
@@ -77,7 +76,6 @@ def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
             #     'DANGEROUS' : 'BLOCK_NONE'
             # }
         )
-
 
         # --- Construct the Multimodal Prompt ---
         prompt_parts = [
@@ -94,7 +92,7 @@ def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
             "*   Transcreva o comando principal da questão e suas alternativas (A,B,C,D,E) ou a afirmação (Certo/Errado) EXATAMENTE como visto na imagem.",
             "",
             "### 3. Julgamento/Resposta Correta",
-            "*   Indique **CERTO**/**ERRADO** ou a **Alternativa Correta** (ex: **Alternativa C**). Forneça apenas a resposta final aqui.", # Simplificado para clareza do modelo
+            "*   Indique **CERTO**/**ERRADO** ou a **Alternativa Correta** (ex: **Alternativa C**). Forneça apenas a resposta final aqui.",
             "",
             "### 4. Justificativa Completa",
             "*   Explique detalhadamente o raciocínio. **CRUCIAL:** Se houver contexto, explique COMO ele leva à resposta.",
@@ -113,60 +111,64 @@ def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
         # Add images to the prompt
         for img in page_images_batch:
             buffer = io.BytesIO()
-            # Tente salvar como WEBP para eficiência, fallback para PNG se houver erro
             try:
-                 img.save(buffer, format="WEBP", lossless=True, quality=90) # Ajuste qualidade se precisar
-                 mime_type = "image/webp"
-            except Exception as e_webp:
-                 st.warning(f"Falha ao salvar como WEBP ({e_webp}), usando PNG.")
-                 buffer = io.BytesIO() # Reset buffer
-                 img.save(buffer, format="PNG")
+                 # WEBP lossless é geralmente bom, mas pode aumentar o tamanho; PNG é seguro.
+                 # img.save(buffer, format="WEBP", lossless=True)
+                 # mime_type = "image/webp"
+                 img.save(buffer, format="PNG") # PNG é mais compatível
                  mime_type = "image/png"
+            except Exception as e_save:
+                 st.warning(f"Falha ao salvar imagem como PNG ({e_save}), pulando esta imagem.")
+                 continue # Pula para a próxima imagem se houver erro
 
             image_bytes = buffer.getvalue()
             prompt_parts.append({"mime_type": mime_type, "data": image_bytes})
-            # Não precisa de separador explícito aqui, a API lida com múltiplas partes de imagem
-
 
         # --- Generate Content ---
-        # Use um spinner específico para a chamada da API
         with st.spinner(f"Analisando {len(page_images_batch)} página(s) com IA Multimodal ({MODEL_NAME})... Esta etapa pode levar alguns minutos."):
             try:
-                # Use generate_content para modelos mais recentes
                 response = model.generate_content(prompt_parts, stream=False)
 
-                # Process Response (Gemini 1.5 Pro e outros modelos mais recentes)
-                if response.parts:
+                # Process Response (Assume Gemini 1.5 Pro/Latest structure)
+                if hasattr(response, 'text'):
+                     full_analysis_text = response.text
+                elif hasattr(response, 'parts') and response.parts:
                      full_analysis_text = "".join(part.text for part in response.parts if hasattr(part, "text"))
-                # Verificação de bloqueio de segurança
                 elif response.prompt_feedback and response.prompt_feedback.block_reason:
                     block_reason = response.prompt_feedback.block_reason
                     block_message = response.prompt_feedback.block_reason_message or f"Reason code: {block_reason}"
                     full_analysis_text = f"**Análise Bloqueada pela API:** {block_message}"
                     st.error(f"A análise multimodal foi bloqueada pela API: {block_message}")
-                # Caso de resposta vazia ou formato inesperado
                 else:
                      full_analysis_text = "A API retornou uma resposta vazia ou em formato não esperado."
                      st.warning(f"Resposta inesperada ou vazia da análise: {response}")
 
-            # Captura de exceções específicas da API e genéricas
             except StopCandidateException as stop_e:
                  full_analysis_text = f"\n\n**Erro de Geração:** A análise foi interrompida prematuramente. Causa provável: {stop_e}. Verifique as políticas de conteúdo ou tente novamente."
                  st.error(f"Erro na Geração Gemini (StopCandidateException): A resposta foi interrompida. Detalhes: {stop_e}")
             except Exception as e:
                  st.error(f"Erro durante a chamada da API Gemini: {str(e)}")
-                 # import traceback # Descomente para debug local
-                 # st.error(traceback.format_exc()) # Descomente para debug local
                  full_analysis_text += f"\n\n**Erro Crítico na Análise:** Não foi possível completar a análise devido a um erro inesperado: {str(e)}"
 
         analysis_output += full_analysis_text
 
     except Exception as e:
-        # Captura erros na configuração do genai ou outras exceções gerais
         st.error(f"Erro geral durante a preparação ou análise multimodal: {str(e)}")
         analysis_output += f"\n\n**Erro Crítico:** Falha inesperada: {str(e)}"
 
     return analysis_output
+
+# --- Callback Function ---
+def sync_batch_selection():
+    """
+    Callback para garantir que a seleção do selectbox seja processada
+    antes da próxima renderização completa do script.
+    O valor já está em st.session_state.selected_batch devido ao 'key'.
+    """
+    # print(f"Callback sync_batch_selection: st.session_state.selected_batch is now '{st.session_state.get('selected_batch')}'")
+    # Não precisa fazer nada aqui, mas a existência do callback ajuda no fluxo do Streamlit.
+    pass
+
 
 # --- Streamlit Interface ---
 
@@ -191,7 +193,7 @@ with st.sidebar:
     1.  Cole sua chave API do Google Gemini.
     2.  Faça o upload do arquivo PDF.
     3.  Aguarde a conversão (pode levar um tempo).
-    4.  Selecione o **batch de páginas** desejado.
+    4.  Selecione o **batch de páginas** desejado. O botão "Analisar" deve habilitar.
     5.  Clique em "Analisar Batch Selecionado".
     6.  Aguarde a análise multimodal pela IA.
     7.  **Repita os passos 4-6 para outros batches do mesmo PDF.**
@@ -228,50 +230,39 @@ uploaded_file = st.file_uploader(
 
 # --- Logic after file upload ---
 if uploaded_file is not None:
-    # Use file name and size as a simple ID
     current_file_id = f"{uploaded_file.name}-{uploaded_file.size}"
 
-    # Check if it's a NEW file compared to the one stored in session state
     if current_file_id != st.session_state.uploaded_file_id:
         st.info(f"Novo arquivo detectado: '{uploaded_file.name}'. Iniciando processamento...")
-        # Reset state for the new file
         st.session_state.uploaded_file_id = current_file_id
         st.session_state.original_filename = uploaded_file.name
-        st.session_state.pdf_page_images = []
-        st.session_state.analysis_result = None
-        st.session_state.error_message = None
-        st.session_state.batch_options = []
-        st.session_state.selected_batch = None
-        st.session_state.analysis_running = False # Ensure analysis is not marked as running
+        # Resetar tudo relacionado ao arquivo anterior
+        for key in default_state:
+             if key != 'uploaded_file_id' and key != 'original_filename': # Preservar o novo ID/nome
+                  st.session_state[key] = default_state[key]
 
         # --- Step 1: Convert PDF to Images ---
         pdf_bytes = uploaded_file.getvalue()
-        # The function call uses the cache if bytes match previous calls
         images, error = convert_pdf_to_images(pdf_bytes)
 
         if error:
             st.error(f"Falha na Conversão do PDF: {error}")
             st.session_state.error_message = f"Falha na Conversão do PDF: {error}"
-            # Stop processing for this file if conversion fails
-            st.session_state.pdf_page_images = [] # Ensure image list is empty
+            st.session_state.pdf_page_images = []
         elif not images:
             st.warning("Nenhuma imagem foi gerada a partir do PDF.")
             st.session_state.error_message = "Nenhuma imagem foi gerada a partir do PDF."
             st.session_state.pdf_page_images = []
         else:
-            # SUCCESS: Store images and create batch options
             st.session_state.pdf_page_images = images
             st.session_state.total_pages = len(images)
             st.success(f"Conversão concluída! {st.session_state.total_pages} páginas prontas para análise.")
 
-            # --- Generate Batch Options based on Pages ---
+            # --- Generate Batch Options ---
             num_batches = math.ceil(st.session_state.total_pages / PAGES_PER_BATCH)
-            batch_opts = [] # Start fresh
-            # Always add "Analisar Todas" if more than one page
+            batch_opts = []
             if st.session_state.total_pages > 1:
                  batch_opts.append("Analisar Todas")
-
-            # Add specific batch options
             for i in range(num_batches):
                 start_page = i * PAGES_PER_BATCH + 1
                 end_page = min((i + 1) * PAGES_PER_BATCH, st.session_state.total_pages)
@@ -281,39 +272,33 @@ if uploaded_file is not None:
                      batch_opts.append(f"Páginas {start_page}-{end_page}")
 
             st.session_state.batch_options = batch_opts
-            # Set default selection (first specific batch, or 'Analisar Todas' if only one page/batch)
+            # Definir seleção inicial (primeiro batch específico, se houver, senão a primeira opção)
             if len(batch_opts) > 1 and "Analisar Todas" in batch_opts:
-                 st.session_state.selected_batch = batch_opts[1] # Select first specific batch e.g., "Páginas 1-2"
+                 st.session_state.selected_batch = batch_opts[1]
             elif batch_opts:
-                 st.session_state.selected_batch = batch_opts[0] # Select the only option available
+                 st.session_state.selected_batch = batch_opts[0]
             else:
-                 st.session_state.selected_batch = None # Should not happen if images were generated
+                 st.session_state.selected_batch = None
 
-            # Use rerun to update the UI immediately after conversion and batch option generation
+            # Rerun para atualizar a UI com as novas opções e seleção padrão
             st.rerun()
 
 # --- Display file details and batch selection UI (if images are ready) ---
 if st.session_state.pdf_page_images:
-    # Display confirmation that file is ready
     file_name_display = f"'{st.session_state.original_filename}'" if st.session_state.original_filename else "Carregado"
     st.success(f"Arquivo {file_name_display} processado. {st.session_state.total_pages} páginas prontas.")
 
-    # --- Expander for Page Thumbnails ---
     with st.expander("Visualizar Páginas Convertidas (Miniaturas)"):
-        # Limit preview to avoid excessive rendering time/memory
         max_preview = 10
-        cols = st.columns(5) # Display up to 5 thumbnails per row
+        cols = st.columns(5)
         for i, img in enumerate(st.session_state.pdf_page_images[:max_preview]):
             with cols[i % 5]:
                 try:
-                    # Use a smaller width for thumbnails
                     st.image(img, caption=f"Página {i+1}", width=120)
                 except Exception as img_disp_err:
                     st.warning(f"Erro exibindo Pág {i+1}: {img_disp_err}")
-
         if st.session_state.total_pages > max_preview:
             st.markdown(f"*(Pré-visualização limitada às primeiras {max_preview} de {st.session_state.total_pages} páginas)*")
-
 
     # --- Batch Selection UI (Sidebar) ---
     with st.sidebar:
@@ -321,47 +306,31 @@ if st.session_state.pdf_page_images:
          if st.session_state.batch_options:
               current_selection = st.session_state.get('selected_batch')
               try:
-                   # Ensure current selection is valid, otherwise default
-                   if current_selection not in st.session_state.batch_options:
-                        current_selection = st.session_state.batch_options[0] # Default to first option
-                        st.session_state.selected_batch = current_selection # Update state if defaulted
+                   # Apenas encontra o índice da seleção atual para exibição
                    current_index = st.session_state.batch_options.index(current_selection)
               except (ValueError, IndexError):
-                   # Fallback if options are somehow empty or index fails
+                   # Se seleção atual inválida ou None, default para índice 0
                    current_index = 0
-                   if st.session_state.batch_options:
-                        st.session_state.selected_batch = st.session_state.batch_options[0]
-                   else:
-                        st.session_state.selected_batch = None # No valid options
+                   # Não precisa redefinir st.session_state.selected_batch aqui
 
-              # Use the key to directly bind to session state.
-              # Streamlit handles the rerun automatically on change.
+              # MODIFICAÇÃO: Adicionado on_change=sync_batch_selection
               st.selectbox(
                   "Escolha o intervalo de páginas:",
                   options=st.session_state.batch_options,
                   index=current_index,
-                  key='selected_batch', # Crucial: Links widget to session state key
+                  key='selected_batch', # Vincula ao estado
+                  on_change=sync_batch_selection, # Chama o callback na mudança
                   help="Selecione as páginas a serem enviadas para análise pela IA."
               )
          else:
-              # This case shouldn't be reached if pdf_page_images is populated
-              st.info("Aguardando opções de batch...")
-
+              st.info("Faça upload de um PDF para ver as opções.")
 
     # --- Analysis Trigger ---
-
     st.write("## ⚙️ 2. Iniciar Análise Multimodal do Batch")
-    selected_batch_display = st.session_state.get('selected_batch', 'Nenhum')
+    selected_batch_display = st.session_state.get('selected_batch', 'None') # Usa 'None' se vazio
 
-    # DEBUG INFO (opcional, mas útil)
-    # st.write("--- DEBUG INFO (Before Button) ---")
-    # st.write(f"analysis_running: {st.session_state.analysis_running}")
-    # st.write(f"selected_batch: '{st.session_state.selected_batch}'")
-    # st.write(f"pdf_page_images exists: {bool(st.session_state.pdf_page_images)}")
-    # st.write(f"api_key exists: {bool(api_key)}")
-    # disabled_check = st.session_state.analysis_running or not st.session_state.selected_batch or not st.session_state.pdf_page_images or not api_key
-    # st.write(f"Button disabled calculated: {disabled_check}")
-    # st.write("--- END DEBUG INFO ---")
+    # Debug (opcional): Verificar o estado antes de renderizar o botão
+    # st.write(f"DEBUG (Pre-Button): selected_batch='{st.session_state.get('selected_batch')}', analysis_running={st.session_state.analysis_running}")
 
     analyze_button = st.button(
          f"Analisar Batch Selecionado ({selected_batch_display})",
@@ -374,9 +343,9 @@ if st.session_state.pdf_page_images:
         # Verificações pré-análise
         if not api_key:
             st.error("⚠️ Por favor, insira sua Chave API do Google Gemini na barra lateral.")
-            st.stop() # Impede a continuação se não houver chave
+            st.stop()
         if not st.session_state.selected_batch:
-             st.error("⚠️ Por favor, selecione um batch de páginas na barra lateral.")
+             st.error("⚠️ Por favor, selecione um batch de páginas válido na barra lateral.")
              st.stop()
         if not st.session_state.pdf_page_images:
              st.error("⚠️ Nenhuma imagem de página encontrada. Faça upload e converta um PDF primeiro.")
@@ -386,25 +355,23 @@ if st.session_state.pdf_page_images:
         st.session_state.analysis_running = True
         st.session_state.analysis_result = None # Limpa resultado anterior
         st.session_state.error_message = None   # Limpa erro anterior
-        # REMOVIDO: st.rerun() daqui. Deixe o script continuar para o bloco 'if analysis_running'.
+        # MODIFICAÇÃO: Removido st.rerun() daqui
 
 # --- Handle Analysis Execution ---
-# Este bloco agora executa na MESMA passagem do script se analyze_button foi True
+# Este bloco executa se analysis_running for True (definido pelo clique no botão)
 if st.session_state.analysis_running:
      # Mostra o spinner durante a preparação e execução
      with st.spinner(f"Preparando e analisando o batch '{st.session_state.selected_batch}'... Isso pode levar um tempo."):
-        # --- Determina as páginas (lógica existente) ---
+        # --- Determina as páginas ---
         pages_to_process = []
-        selected = st.session_state.selected_batch
+        selected = st.session_state.selected_batch # Usa o valor que DEVE estar correto agora
         all_images = st.session_state.pdf_page_images
         total_pg = st.session_state.total_pages
 
         if selected == "Analisar Todas":
-            # ... (lógica para 'Analisar Todas')
-            pages_to_process = all_images # Simplificado
+            pages_to_process = all_images
             st.info(f"Processando todas as {total_pg} páginas...")
         else:
-            # ... (lógica para extrair start/end page e obter pages_to_process)
             nums_str = re.findall(r'\d+', selected)
             try:
                 if len(nums_str) == 1:
@@ -429,51 +396,39 @@ if st.session_state.analysis_running:
                 st.error(f"Erro ao interpretar batch '{selected}': {parse_e}.")
                 pages_to_process = []
 
-
-        # --- Executa a análise se houver páginas ---
-        analysis_result_text = None # Variável temporária
+        # --- Executa a análise ---
+        analysis_result_text = None
         if pages_to_process:
             analysis_result_text = analyze_pages_with_gemini_multimodal(
                     api_key,
                     pages_to_process,
                 )
-            st.session_state.analysis_result = analysis_result_text # Armazena no estado
-            if "Erro" in analysis_result_text or "Bloqueada" in analysis_result_text:
-                 st.session_state.error_message = "Erro durante a análise pela IA."
+            st.session_state.analysis_result = analysis_result_text
+            if "Erro" in (analysis_result_text or "") or "Bloqueada" in (analysis_result_text or ""):
+                 st.session_state.error_message = "Erro durante a análise pela IA. Verifique os detalhes."
         else:
             if not st.session_state.error_message: # Evita sobrescrever erro de parsing
                   st.session_state.error_message = "Nenhuma página selecionada para análise neste batch."
 
-        # --- Análise concluída (ou falhou) ---
+        # --- Análise concluída ---
         st.session_state.analysis_running = False
-        # AGORA chamamos st.rerun() para atualizar a UI com o resultado/erro
-        # e reabilitar o botão.
-        st.rerun()
+        # MODIFICAÇÃO: st.rerun() movido para cá
+        st.rerun() # Atualiza a UI para mostrar resultado/erro e reabilitar botão
 
 # --- Display Results or Errors ---
-# (O restante do código para exibir resultados/erros permanece o mesmo)
-# ...
-
-
-# --- Display Results or Errors ---
-# Display errors prominently if they occurred
 if st.session_state.error_message and not st.session_state.analysis_running:
     st.error(f"⚠️ {st.session_state.error_message}")
-    # Consider if the error message should be cleared after display,
-    # maybe keep it until next successful action or new file. For now, it persists.
 
-# Display results if available and analysis is not running
 if st.session_state.analysis_result and not st.session_state.analysis_running:
     st.write(f"## 📊 3. Resultado da Análise Multimodal (Batch: {st.session_state.get('selected_batch', 'N/A')})")
-    st.markdown(st.session_state.analysis_result, unsafe_allow_html=False) # Prefer False for safety
+    st.markdown(st.session_state.analysis_result, unsafe_allow_html=False)
 
-    # --- Download Button for the current result ---
+    # --- Download Button ---
     try:
-        # Sanitize filename parts
-        original_filename_base = "prova" # Default
+        original_filename_base = "prova"
         if st.session_state.original_filename:
              original_filename_base = os.path.splitext(st.session_state.original_filename)[0]
-             original_filename_base = re.sub(r'[^\w\d-]+', '_', original_filename_base) # Sanitize
+             original_filename_base = re.sub(r'[^\w\d-]+', '_', original_filename_base)
 
         batch_suffix = "completo"
         if st.session_state.selected_batch:
@@ -483,7 +438,7 @@ if st.session_state.analysis_result and not st.session_state.analysis_running:
 
         st.download_button(
             label=f"📥 Baixar Análise do Batch Atual ({st.session_state.get('selected_batch', 'N/A')}) (Markdown)",
-            data=st.session_state.analysis_result.encode('utf-8'), # Encode result string to bytes
+            data=(st.session_state.analysis_result or "").encode('utf-8'), # Garante que seja string antes de encode
             file_name=download_filename,
             mime="text/markdown"
         )
