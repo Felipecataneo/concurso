@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # --- Constantes ---
-MODEL_NAME = "gemini-2.5-pro-exp-05-23" # Ou "gemini-pro-vision" se preferir
+MODEL_NAME = "gemini-2.5-pro-exp-03-25" # Ou "gemini-pro-vision" se preferir
 PAGES_PER_BATCH = 2 # Analisar 2 páginas por vez
 
 # --- Funções Auxiliares ---
