@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # --- Constantes ---
-MODEL_NAME = "gemini-2.5-pro-exp-03-25" # Modelo mais recente e geralmente mais rápido/barato
+MODEL_NAME = "gemini-2.0-flash" # Modelo mais recente e geralmente mais rápido/barato
 PAGES_PER_BATCH = 2 # Analisar 2 páginas por vez
 
 # --- Funções Auxiliares ---
