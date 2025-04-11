@@ -5,7 +5,7 @@ from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError, PD
 from PIL import Image
 import os
 import google.generativeai as genai
-from google.generativeai.types import StopCandidateException
+from google.generativeai.types import StopCandidateException,HarmCategory, HarmBlockThreshold, GenerationConfig, FinishReason
 import re
 import time
 import math
@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # --- Constantes ---
-MODEL_NAME = "gemini-2.0-flash" # Modelo mais recente e geralmente mais rápido/barato
+MODEL_NAME = "gemini-2.5-pro-exp-03-25" # Modelo mais recente e geralmente mais rápido/barato
 PAGES_PER_BATCH = 2 # Analisar 2 páginas por vez
 
 # --- Funções Auxiliares ---
@@ -73,7 +73,13 @@ def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name=MODEL_NAME)
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+        model = genai.GenerativeModel(model_name=MODEL_NAME, safety_settings=safety_settings)
 
         prompt_parts = [
             # ... (seu prompt extenso aqui - mantenha como está) ...
@@ -162,50 +168,76 @@ def analyze_pages_with_gemini_multimodal(api_key, page_images_batch):
             try:
                 response = model.generate_content(prompt_parts, stream=False)
 
-                # --- Log da resposta crua (comentado/removido) ---
-                # st.json({"api_response": str(response)})
+                # --- VERIFICAÇÃO DE BLOQUEIO / FINISH_REASON ANTES DE ACESSAR O TEXTO ---
+                finish_reason_val = None
+                is_blocked = False
 
-                if hasattr(response, 'text') and response.text:
+                # Verifica se há candidatos e qual o motivo de término do primeiro (geralmente único)
+                if response.candidates:
+                     # Use finish_reason diretamente, é um enum ou int dependendo da versão/contexto
+                     finish_reason_val = response.candidates[0].finish_reason
+                     # Verifica também os safety_ratings associados a este candidato
+                     if any(rating.blocked for rating in response.candidates[0].safety_ratings):
+                          is_blocked = True
+
+                # Verifica o feedback geral do prompt também
+                if response.prompt_feedback and response.prompt_feedback.block_reason:
+                    is_blocked = True
+                    block_reason_msg = response.prompt_feedback.block_reason
+                    block_details = getattr(response.prompt_feedback, 'block_reason_message', '')
+                    st.error(f"Análise Bloqueada (Prompt Feedback): {block_reason_msg} {block_details}", icon="🚫")
+                    full_analysis_text = f"**Análise Bloqueada pela API (Feedback do Prompt):** {block_reason_msg} {block_details}"
+
+
+                # Se foi explicitamente bloqueado OU terminou por recitação (mesmo com safety=NONE)
+                if is_blocked:
+                     # A mensagem de erro já foi dada acima pelo prompt_feedback ou será genérica
+                     if not full_analysis_text: # Se não foi preenchido pelo prompt_feedback
+                          st.error(f"Análise Bloqueada (Safety Ratings do Candidato). Finish Reason: {finish_reason_val}", icon="🚫")
+                          full_analysis_text = f"**Análise Bloqueada pela API (Safety Ratings):** A resposta foi bloqueada por segurança. Finish Reason: {finish_reason_val}"
+
+                elif finish_reason_val == FinishReason.RECITATION: # Compara com o Enum importado
+                    st.warning(f"Análise Interrompida: O modelo parou devido a possível recitação (Finish Reason: {finish_reason_val}=RECITATION), mesmo com segurança baixa. O resultado pode estar incompleto.", icon="⚠️")
+                    # Tenta pegar o texto parcial que foi gerado ANTES de parar
+                    if hasattr(response, 'text') and response.text:
+                        full_analysis_text = response.text + "\n\n*(Atenção: Geração interrompida por possível recitação)*"
+                    elif response.parts:
+                        full_analysis_text = "".join(part.text for part in response.parts if hasattr(part, "text")) + "\n\n*(Atenção: Geração interrompida por possível recitação)*"
+                    else:
+                        full_analysis_text = "**Atenção:** Geração interrompida por possível recitação, e nenhum texto parcial pôde ser recuperado."
+
+                # Se não foi bloqueado nem parou por recitação, tenta pegar o texto normalmente
+                elif hasattr(response, 'text') and response.text:
                     full_analysis_text = response.text
-                    # st.info("Texto da análise extraído diretamente do atributo 'text' da resposta.") # Removido
-                elif hasattr(response, 'parts') and response.parts:
+                elif response.parts: # Verifica parts mesmo se text existir, pode ter multimodal
                      full_analysis_text = "".join(part.text for part in response.parts if hasattr(part, "text"))
-                     # st.info("Texto da análise extraído concatenando 'parts' da resposta.") # Removido
-                elif hasattr(response, 'prompt_feedback') and response.prompt_feedback and response.prompt_feedback.block_reason:
-                    block_reason = response.prompt_feedback.block_reason
-                    block_message = getattr(response.prompt_feedback, 'block_reason_message', f"Reason code: {block_reason}")
-                    full_analysis_text = f"**Análise Bloqueada pela API:** {block_message}"
-                    # Mantido erro essencial
-                    st.error(f"A análise multimodal foi bloqueada pela API: {block_message}")
-                else:
-                     full_analysis_text = "A API retornou uma resposta vazia ou em formato não esperado."
-                     # Mantido warning essencial
-                     st.warning(f"Resposta inesperada ou vazia da análise. Resposta recebida: {response}")
+                # Se chegou aqui sem texto e sem bloqueio/recitação, é um caso inesperado
+                elif not full_analysis_text:
+                     st.warning(f"Resposta inesperada ou vazia da análise. Finish Reason: {finish_reason_val}. Resposta: {response}", icon="❓")
+                     full_analysis_text = f"A API retornou uma resposta vazia ou em formato não esperado (Finish Reason: {finish_reason_val})."
 
-                # Mantido warning essencial
-                if not full_analysis_text.strip() and "Bloqueada" not in full_analysis_text:
-                    st.warning("O processamento da resposta da API resultou em texto vazio.")
 
+            # --- Tratamento de Exceções da API (como antes) ---
             except StopCandidateException as stop_e:
-                 full_analysis_text = f"\n\n**Erro de Geração:** A análise foi interrompida prematuramente. Causa provável: {stop_e}. Verifique as políticas de conteúdo ou tente novamente."
-                 st.error(f"Erro na Geração Gemini (StopCandidateException): A resposta foi interrompida. Detalhes: {stop_e}") # Mantido
+                 # Esta exceção pode ocorrer se o *candidate* for interrompido (inclui segurança)
+                 st.error(f"Erro na Geração Gemini (StopCandidateException): A resposta foi interrompida. Detalhes: {stop_e}", icon="🛑")
+                 full_analysis_text = f"\n\n**Erro de Geração (StopCandidateException):** A análise foi interrompida prematuramente. Causa provável: {stop_e}. Verifique as políticas de conteúdo ou a resposta parcial."
             except Exception as e:
-                 st.error(f"Erro durante a chamada da API Gemini: {str(e)}", icon="🚨") # Mantido
-                 full_analysis_text += f"\n\n**Erro Crítico na Análise:** Não foi possível completar a análise devido a um erro inesperado na API: {str(e)}"
+                 # Erro genérico na chamada da API
+                 st.error(f"Erro durante a chamada da API Gemini: {str(e)}", icon="🚨")
+                 # Adiciona mensagem de erro mais específica sobre o acesso ao .text que pode ter falhado
+                 if "Invalid operation: The response.text quick accessor requires" in str(e):
+                      full_analysis_text += "\n\n**Erro Crítico na Análise:** Falha ao acessar o texto da resposta. Isso geralmente ocorre quando a API bloqueia a resposta por segurança (verifique 'Finish Reason' nos logs ou mensagens de erro acima)."
+                 else:
+                      full_analysis_text += f"\n\n**Erro Crítico na Análise:** Não foi possível completar a análise devido a um erro inesperado na API: {str(e)}"
+
 
         analysis_output += full_analysis_text
 
     except Exception as e:
-        st.error(f"Erro geral durante a preparação ou análise multimodal: {str(e)}", icon="🔥") # Mantido
+        # Erro geral fora da chamada da API (configuração, etc.)
+        st.error(f"Erro geral durante a preparação ou análise multimodal: {str(e)}", icon="🔥")
         analysis_output += f"\n\n**Erro Crítico:** Falha inesperada no setup da análise: {str(e)}"
-
-    # --- Logs finais da função removidos ---
-    # if not full_analysis_text.strip() and "Erro" not in analysis_output and "Bloqueada" not in analysis_output:
-    #     st.warning(f"[analyze_pages_with_gemini_multimodal] Retornando análise aparentemente vazia para o batch.")
-    # elif "Erro" in analysis_output or "Bloqueada" in analysis_output:
-    #     st.error(f"[analyze_pages_with_gemini_multimodal] Retornando análise com erro/bloqueio para o batch.")
-    # else:
-    #     st.success(f"[analyze_pages_with_gemini_multimodal] Retornando análise bem-sucedida para o batch.")
 
     return analysis_output
 
